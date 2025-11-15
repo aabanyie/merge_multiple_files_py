@@ -1,13 +1,12 @@
-import argparse
-import glob
-import json
+# MERGING MULTIPLE FILES
+
 import os
-from pathlib import Path
+import pandas as pd
 import csv
 
-import pandas as pd
 
 def load_data(data_dir=None):
+    allowed = ['.csv', '.txt', '.xls', '.xlsx']
     if data_dir is None:
         default_dir = os.path.dirname(os.path.abspath(__file__))
         print()
@@ -15,207 +14,258 @@ def load_data(data_dir=None):
         data_dir = user_dir if user_dir else default_dir
     if not os.path.isdir(data_dir):
         print(f"Directory '{data_dir}' does not exist.")
-        return None, None
-    files = [f for f in os.listdir(data_dir)
-             if os.path.isfile(os.path.join(data_dir, f))
-             and not f.startswith('~$')
-             and not f.startswith('.')]
+        return None
+
+    # collect only allowed files
+    files = []
+    for fname in os.listdir(data_dir):
+        path = os.path.join(data_dir, fname)
+        if os.path.isfile(path):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in allowed and not fname.startswith('~$') and not fname.startswith('.'):
+                files.append(fname)
     if not files:
-        print("No files found in the folder.")
-        return None, None
-    print("\nAvailable files in the folder:")
-    for idx, file in enumerate(files, 1):
-        print(f"{idx}. {file}")
-    try:
-        choice = int(input("\nEnter the number of the file to load: "))
-        file_name = files[choice - 1]
-    except (ValueError, IndexError):
-        print("Invalid selection.")
-        return None, None
-    file_path = os.path.join(data_dir, file_name)
-    try:
-        if file_name.lower().endswith('.csv'):
-            # attempt sniffing delimiter for csv as well
-            with open(file_path, 'rb') as f:
-                sample = f.read(8192)
-            delim = detect_delimiter(sample)
-            df = pd.read_csv(file_path, delimiter=delim, encoding='utf-8', errors='ignore')
-        elif file_name.lower().endswith(('.xls', '.xlsx')):
-            df = pd.read_excel(file_path)
-        elif file_name.lower().endswith('.txt'):
-            # Inline delimiter detection with explicit encoding and fallback
-            with open(file_path, 'rb') as f:
-                sample = f.read(8192)
-            delim = detect_delimiter(sample)
-            print(f"Auto-detected delimiter: '{delim}'")
-            df = pd.read_csv(file_path, delimiter=delim, encoding='utf-8', errors='ignore')
-        else:
-            print("Unsupported file format. Please provide a CSV, TXT, or Excel file.")
-            return None, None
-        print()
-        print(f"Data loaded successfully with {len(df):,} records and {len(df.columns):,} columns.")
-        return df, file_path
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return None, None
+        print("No supported files (.csv, .txt, .xls, .xlsx) found in the folder.")
+        return None
 
-def detect_delimiter(sample_bytes: bytes) -> str:
-    try:
-        sample = sample_bytes.decode(errors="ignore")
-        dialect = csv.Sniffer().sniff(sample)
-        return dialect.delimiter
-    except Exception:
-        return ","
-
-
-def list_files(source: str, pattern: str = "*", recursive: bool = False):
-    p = Path(source)
-    if p.is_file():
-        return [str(p)]
-    if recursive:
-        return [str(p) for p in p.rglob(pattern)]
-    return [str(p) for p in p.glob(pattern)]
-
-
-def merge_csv(files, output_path, index=False, infer_delimiter=True, **read_kwargs):
-    dfs = []
+    # group by extension
+    exts = {}
     for f in files:
-        if infer_delimiter:
-            with open(f, "rb") as fh:
-                delim = detect_delimiter(fh.read(4096))
-            df = pd.read_csv(f, delimiter=delim, encoding=read_kwargs.get("encoding", "utf-8"), errors="ignore", **{k:v for k,v in read_kwargs.items() if k not in ("encoding",)})
-        else:
-            df = pd.read_csv(f, **read_kwargs)
-        dfs.append(df)
-    out = pd.concat(dfs, ignore_index=True, sort=False)
-    out.to_csv(output_path, index=index, encoding='utf-8')
-    return output_path
+        ext = os.path.splitext(f)[1].lower()
+        exts.setdefault(ext, []).append(f)
 
+    while True:
+        print("\nAvailable file types in the folder:")
+        ext_keys = list(exts.keys())
+        for idx, ext in enumerate(ext_keys, 1):
+            print(f"{idx}. {ext} ({len(exts[ext])} files)")
 
-def merge_excel(files, output_path, index=False, sheet_name=None, **read_kwargs):
-    dfs = []
-    for f in files:
-        df = pd.read_excel(f, sheet_name=sheet_name or 0, **read_kwargs)
-        dfs.append(df)
-    out = pd.concat(dfs, ignore_index=True)
-    out.to_excel(output_path, index=index)
-    return output_path
-
-
-def merge_json(files, output_path):
-    merged = []
-    for f in files:
+        # prompt for extension selection
+        choice = input("\nSelect file type by number or extension (e.g. 1 or .csv), or 'q' to quit: ").strip().lower()
+        if choice in ('q', 'quit'):
+            print("Selection cancelled by user.")
+            return None
         try:
-            with open(f, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, list):
-                    merged.extend(data)
+            if choice.isdigit():
+                ext_choice = ext_keys[int(choice) - 1]
+            else:
+                ext_choice = choice if choice.startswith('.') else '.' + choice
+                if ext_choice not in exts:
+                    print("Invalid extension selected.")
+                    continue
+        except Exception:
+            print("Invalid selection.")
+            continue
+
+        # list files of selected type
+        candidates = exts[ext_choice]
+        print(f"\nFiles with '{ext_choice}':")
+        for idx, fname in enumerate(candidates, 1):
+            print(f"{idx}. {fname}")
+
+        # Ask user Y/N for each file. If 'y' -> offer combine option or load single file.
+        file_name = None
+        for fname in candidates:
+            ans = input(f"\nAre these the expected files to load? (y/n) [q to quit]: ").strip().lower()
+            if ans in ('y', 'yes'):
+                print(f"\nYou selected all {len(candidates)} '{ext_choice}' files.")
+                print()
+                comb = input(f"Combine all {len(candidates)} '{ext_choice}' files into one file? (y/n): ").strip().lower()
+                if comb in ('y', 'yes'):
+                    merged_path = combine_and_save_files(data_dir, ext_choice, candidates)
+                    if merged_path:
+                        # load merged file
+                        try:
+                            if ext_choice in ('.csv', '.txt'):
+                                with open(merged_path, 'rb') as fh:
+                                    sample = fh.read(8192)
+                                try:
+                                    sample_text = sample.decode('utf-8')
+                                except Exception:
+                                    sample_text = sample.decode('latin1', errors='ignore')
+                                try:
+                                    dialect = csv.Sniffer().sniff(sample_text)
+                                    delimiter = dialect.delimiter
+                                except Exception:
+                                    delimiter = ','
+                                with open(merged_path, 'r', encoding='utf-8', errors='ignore') as tf:
+                                    df = pd.read_csv(tf, delimiter=delimiter)
+                            else:
+                                df = pd.read_excel(merged_path)
+                            print()
+                            print(f"Loaded merged file '{os.path.basename(merged_path)}' with {len(df):,} records and {len(df.columns):,} columns.")
+                            return df
+                        except Exception as e:
+                            print(f"Error loading merged file: {e}")
+                            return None
+                    else:
+                        # merging aborted or failed — return to selection
+                        file_name = None
+                        break
                 else:
-                    merged.append(data)
-        except json.JSONDecodeError:
-            # try newline-delimited JSON (ndjson)
-            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
+                    file_name = fname
+                    break
+            elif ans in ('n', 'no'):
+                continue
+            elif ans in ('q', 'quit'):
+                print("Selection cancelled by user.")
+                return None
+            else:
+                print("Please answer 'y' or 'n' (or 'q' to quit).")
+                continue
+
+        if file_name is None:
+            # user did not pick a single file (or chose to merge which handled above) -> restart selection
+            continue
+
+
+
+def combine_and_save_files(data_dir: str, ext_choice: str, candidates: list):
+    """
+    Combine all files in `candidates` (filenames) located in `data_dir` with extension `ext_choice`.
+    Ask user for output filename, save merged file in the same folder, and return the full path
+    (or None on abort/error).
+    Reports per-file errors (filename + issue) and continues merging remaining files.
+    """
+    ext_choice = ext_choice.lower()
+    out_name = input(f"\nEnter output filename (leave blank for merged{ext_choice}): ").strip()
+    if not out_name:
+        out_name = f"merged{ext_choice}"
+    if not out_name.lower().endswith(ext_choice):
+        out_name = out_name + ext_choice
+    out_path = os.path.join(data_dir, out_name)
+    if os.path.exists(out_path):
+        ans = input(f"File '{out_name}' already exists. Overwrite? (y/n): ").strip().lower()
+        if ans not in ('y', 'yes'):
+            print("Aborting save.")
+            return None
+
+    def robust_read_file(fp, delimiter=None):
+        # Try using detected delimiter with python engine and warn on bad lines
+        try:
+            if delimiter:
+                with open(fp, 'r', encoding='utf-8', errors='ignore') as tf:
+                    return pd.read_csv(tf, delimiter=delimiter, engine='python', on_bad_lines='warn')
+            # fallback: let pandas auto-detect
+            return pd.read_csv(fp, sep=None, engine='python', on_bad_lines='warn')
+        except Exception:
+            # last resort: use csv.reader and pad rows to same length
+            rows = []
+            with open(fp, 'r', encoding='utf-8', errors='ignore') as fh:
+                reader = csv.reader(fh)
+                for r in reader:
+                    rows.append(r)
+            if not rows:
+                return pd.DataFrame()
+            maxlen = max(len(r) for r in rows)
+            cols = [f'col_{i+1}' for i in range(maxlen)]
+            normalized = [r + [''] * (maxlen - len(r)) for r in rows]
+            return pd.DataFrame(normalized, columns=cols)
+
+    per_file_errors = []
+    read_success = []
+    try:
+        if ext_choice in ('.csv', '.txt'):
+            dfs = []
+            for fname in candidates:
+                fp = os.path.join(data_dir, fname)
+                try:
+                    # attempt delimiter sniff
+                    delimiter = None
                     try:
-                        merged.append(json.loads(line))
+                        with open(fp, 'rb') as fh:
+                            sample = fh.read(8192)
+                        try:
+                            sample_text = sample.decode('utf-8')
+                        except Exception:
+                            sample_text = sample.decode('latin1', errors='ignore')
+                        try:
+                            dialect = csv.Sniffer().sniff(sample_text)
+                            delimiter = dialect.delimiter
+                        except Exception:
+                            delimiter = None
                     except Exception:
-                        # skip malformed lines
-                        continue
-    with open(output_path, "w", encoding="utf-8") as fh:
-        json.dump(merged, fh, ensure_ascii=False, indent=2)
-    return output_path
+                        delimiter = None
+                    df = robust_read_file(fp, delimiter=delimiter)
+                    if df is None:
+                        raise ValueError("No data returned")
+                    dfs.append(df)
+                    read_success.append(fname)
+                except Exception as e:
+                    per_file_errors.append((fname, str(e)))
+                    print(f"[ERROR] Failed to read '{fname}': {e}")
+                    # continue with next file
+                    continue
+
+            if not dfs:
+                print("No files could be read successfully. Aborting merge.")
+                return None
+
+            merged = pd.concat(dfs, ignore_index=True, sort=False)
+            merged.to_csv(out_path, index=False, encoding='utf-8')
+        else:  # .xls / .xlsx
+            dfs = []
+            for fname in candidates:
+                fp = os.path.join(data_dir, fname)
+                try:
+                    df = pd.read_excel(fp)
+                    dfs.append(df)
+                    read_success.append(fname)
+                except Exception as e:
+                    per_file_errors.append((fname, str(e)))
+                    print(f"[ERROR] Failed to read '{fname}': {e}")
+                    continue
+            if not dfs:
+                print("No Excel files could be read successfully. Aborting merge.")
+                return None
+            merged = pd.concat(dfs, ignore_index=True, sort=False)
+            merged.to_excel(out_path, index=False)
+
+        print(f"\nMerged {len(read_success)} / {len(candidates)} files -> {out_path}")
+        if per_file_errors:
+            print("\nSome files failed to merge:")
+            for fname, err in per_file_errors:
+                print(f" - {fname}: {err}")
+        return out_path
+    except Exception as e:
+        print(f"Error merging files: {e}")
+        if per_file_errors:
+            print("\nFiles with errors encountered during merge:")
+            for fname, err in per_file_errors:
+                print(f" - {fname}: {err}")
+        return None
 
 
-def merge_txt(files, output_path, encoding="utf-8"):
-    with open(output_path, "w", encoding=encoding) as outfh:
-        for f in files:
-            with open(f, "r", encoding=encoding, errors="ignore") as fh:
-                outfh.write(f"\n--- FILE: {os.path.basename(f)} ---\n")
-                outfh.write(fh.read())
-    return output_path
 
 
-def merge_parquet(files, output_path):
-    dfs = [pd.read_parquet(f) for f in files]
-    out = pd.concat(dfs, ignore_index=True)
-    out.to_parquet(output_path, index=False)
-    return output_path
-
+def show_problem_lines(file_path, context=2, max_report=20):
+    """Print lines with odd number of double quotes (likely malformed)."""
+    bad = []
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as fh:
+        lines = fh.readlines()
+    for i, L in enumerate(lines, 1):
+        if L.count('"') % 2 == 1:
+            bad.append(i)
+            if len(bad) >= max_report:
+                break
+    if not bad:
+        print("No obvious unbalanced-quote lines found.")
+        return
+    print(f"Found {len(bad)} suspicious lines (showing up to {max_report}):")
+    for ln in bad:
+        start = max(0, ln-1-context)
+        end = min(len(lines), ln-1+context+1)
+        print(f"\n--- Context for line {ln} ---")
+        for j in range(start, end):
+            prefix = ">>" if (j+1)==ln else "  "
+            print(f"{prefix} {j+1:4d}: {lines[j].rstrip()}")
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Merge multiple files of the same type (csv, xlsx, json, txt, parquet)."
-    )
-    # make source optional so load_data can be used interactively
-    parser.add_argument("source", nargs='?', help="file or directory containing files to merge (leave blank for interactive file selection)", default=None)
-    parser.add_argument(
-        "--ext",
-        help="file extension to merge (csv, xlsx, json, txt, parquet). If omitted, inferred from files.",
-        default=None,
-    )
-    parser.add_argument("--pattern", help="glob pattern (e.g. '*.csv')", default="*")
-    parser.add_argument("--recursive", help="search recursively", action="store_true")
-    parser.add_argument("--output", help="output file path (defaults to merged.<ext>)", default=None)
-    args = parser.parse_args()
-
-    # If no source supplied, let user pick a file via load_data()
-    if args.source is None:
-        df, selected_path = load_data()
-        if selected_path is None:
-            raise SystemExit("No file selected.")
-        # treat selected file as the single-source for merging
-        files = [selected_path]
-        ext = Path(selected_path).suffix.lower().lstrip(".")
-        # default output in same parent directory
-        base_dir = Path(selected_path).resolve().parent
-        output = args.output or str(base_dir / f"merged.{ext}")
-    else:
-        files = list_files(args.source, pattern=args.pattern, recursive=args.recursive)
-        if not files:
-            raise SystemExit("No files found.")
-
-        # filter by ext if provided
-        if args.ext:
-            ext = args.ext.lower().lstrip(".")
-            files = [f for f in files if Path(f).suffix.lower().lstrip(".") == ext]
-        else:
-            # infer ext from first file
-            ext = Path(files[0]).suffix.lower().lstrip(".")
-            files = [f for f in files if Path(f).suffix.lower().lstrip(".") == ext]
-
-        if not files:
-            raise SystemExit("No files matching the chosen extension were found.")
-
-        # compute default output path in parent dir if source is a file
-        if args.output:
-            output = args.output
-        else:
-            src_path = Path(args.source).resolve()
-            base_dir = src_path.parent if src_path.is_file() else src_path
-            output = str(base_dir / f"merged.{ext}")
-
-    # exclude the output file from files list if it exists in the same dir
-    files = [f for f in files if os.path.abspath(f) != os.path.abspath(output)]
-
-    print(f"Merging {len(files)} .{ext} files -> {output}")
-
-    if ext == "csv":
-        merge_csv(files, output)
-    elif ext in ("xls", "xlsx"):
-        merge_excel(files, output)
-    elif ext == "json":
-        merge_json(files, output)
-    elif ext == "txt":
-        merge_txt(files, output)
-    elif ext == "parquet":
-        merge_parquet(files, output)
-    else:
-        raise SystemExit(f"Unsupported extension: {ext}")
-
-    print("Done.")
+    df = load_data()
+    if df is not None:
+        print("\nFirst 5 rows of the loaded data:")
+        print(df.head())
 
 if __name__ == "__main__":
     main()
+
